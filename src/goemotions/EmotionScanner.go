@@ -1,10 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"os"
 )
+
+type EmotionalResult struct {
+	PercentPositive float32
+	PercentNegative float32
+	WordCount       int
+}
 
 type EmotionScanner struct {
 	positive      *WordDict
@@ -14,7 +20,7 @@ type EmotionScanner struct {
 	negativeMarks int
 }
 
-func (self *EmotionScanner) Scan(in io.Reader) bool {
+func (self *EmotionScanner) Scan(in io.Reader) *EmotionalResult {
 	var wordCount int
 	self.in = NewWordsReader(in)
 	word, err := self.in.Read()
@@ -29,15 +35,11 @@ func (self *EmotionScanner) Scan(in io.Reader) bool {
 		word, err = self.in.Read()
 	}
 	if err != io.EOF {
-		fmt.Fprintf(os.Stderr, "I/O error: %s\n", err.Error())
-		return false
+		panic(errors.New(fmt.Sprintf("I/O error: %s\n", err.Error())))
 	}
-	if self.negativeMarks+self.positiveMarks == 0 {
-		fmt.Fprintf(os.Stdout, "Text has %d words without any emotions.\n", wordCount)
-	} else {
-		percentPos := 100.0 * float32(self.positiveMarks) / float32(wordCount)
-		percentNeg := 100.0 * float32(self.negativeMarks) / float32(wordCount)
-		fmt.Fprintf(os.Stdout, "Text has %d words, %.2f%% positive and %.2f%% negative\n", wordCount, percentPos, percentNeg)
+	return &EmotionalResult{
+		WordCount:       wordCount,
+		PercentPositive: 100.0 * float32(self.positiveMarks) / float32(wordCount),
+		PercentNegative: 100.0 * float32(self.negativeMarks) / float32(wordCount),
 	}
-	return true
 }

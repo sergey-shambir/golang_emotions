@@ -3,66 +3,97 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
+	"net/rpc"
 	"os"
+	"path/filepath"
 )
 
+const APP_USAGE = `Usage:
+  %s <command> [<filename>]
+  %s -service -port=8080
+Commands:
+  scan <filename> - scans filename for emotios
+  close - stops background service
+  reload - reloads settings`
+
 func ShowApplicationUsage() {
-	fmt.Fprintf(os.Stderr,
-		"Usage: %s [-s] [-in=<path>]\n",
-		os.Args[0])
+	appName := os.Args[0]
+	fmt.Fprintf(os.Stderr, APP_USAGE, appName, appName)
 	fmt.Fprintf(os.Stderr,
 		"Flags:\n")
 	flag.PrintDefaults()
 }
 
 type Application struct {
-	input        string
-	positivePath string
-	negativePath string
-	scanner      EmotionScanner
+	isService bool
+	tcpPort   int
 }
 
-var g_app *Application
-
 func (self *Application) Init() {
-	flag.StringVar(&self.input, "in", "", "use self file instead of stdin input")
-	flag.StringVar(&self.positivePath, "dict-positive", "positive.dat", "path to dictionary with positive emotion rules")
-	flag.StringVar(&self.negativePath, "dict-negative", "negative.dat", "path to dictionary with negative emotion rules")
+	flag.BoolVar(&self.isService, "service", false, "run as service on TCP socket")
+	flag.IntVar(&self.tcpPort, "port", 8080, "TCP port for service socket")
 	flag.Usage = ShowApplicationUsage
 	flag.Parse()
 }
 
-func (self *Application) Exec() {
+func (self *Application) Exec() (result bool) {
 	defer func() {
 		if err := recover(); err != nil {
 			PrintBacktrace(err)
+			result = false
 		}
 	}()
-	self.scanner.positive = NewWordDict(self.positivePath)
-	self.scanner.negative = NewWordDict(self.negativePath)
 
-	var in io.Reader
-	if len(self.input) != 0 {
-		file, err := os.Open(self.input)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Fatal error: %s", err.Error())
-			os.Exit(1)
+	if self.isService {
+		service := NewServiceOnTcp(self.tcpPort)
+		service.Loop()
+		return true
+	}
+	return self.ExecClient()
+}
+
+func (self *Application) ExecClient() (result bool) {
+	if flag.NArg() == 0 {
+		ShowApplicationUsage()
+		return false
+	}
+
+	rpcClient, err := rpc.Dial(GetServiceSocket(self.tcpPort))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot open RPC connection: %v\n", err)
+		return false
+	}
+
+	switch flag.Arg(0) {
+	case "close":
+		ClientCloseService(rpcClient)
+	case "reload":
+		ClientReloadService(rpcClient)
+	case "scan":
+		if flag.NArg() != 2 {
+			ShowApplicationUsage()
+			return false
 		}
-		defer file.Close()
-		in = file
-	} else {
-		in = os.Stdin
+		inputPath, err := filepath.Abs(flag.Arg(1))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Cannot get full path from '%s'\n", flag.Arg(1))
+			return false
+		}
+		result := ClientScanEmotions(rpcClient, inputPath)
+		fmt.Fprintf(os.Stdout, "Text has %d words, %.2f%% positive and %.2f%% negative\n", result.WordCount, result.PercentPositive, result.PercentNegative)
+	default:
+		ShowApplicationUsage()
+		return false
 	}
-
-	if self.scanner.Scan(in) {
-		os.Exit(0)
-	}
-	os.Exit(1)
+	return true
 }
 
 func main() {
-	g_app = new(Application)
-	g_app.Init()
-	g_app.Exec()
+	app := new(Application)
+	app.Init()
+	exitCode := 1
+	if app.Exec() {
+		exitCode = 0
+	}
+	os.Exit(exitCode)
 }
